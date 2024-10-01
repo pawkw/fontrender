@@ -1,21 +1,70 @@
 from dataclasses import dataclass
 import struct
 
+class ByteArrayBuffer:
+    def __init__(self, buffer: bytearray) -> None:
+        self.buffer = buffer
+        self.pointer = 0
+
+    def set_pointer(self, pointer):
+        self.pointer = pointer
+
+    def read(self, number_of_bytes):
+        result = self.buffer[self.pointer:self.pointer + number_of_bytes]
+        self.pointer += number_of_bytes
+        return result
+    
+    def read_uint8(self):
+        return struct.unpack('>B', self.read(1))
+    
+    def read_int16(self):
+        return struct.unpack('>h', self.read(2))
+    
+    def read_uint16(self):
+        return struct.unpack('>H', self.read(2))
+    
+
 @dataclass
 class directory_entry:
-    tag: str
     checksum: int
     offset: int
     length: int
 
-    def __init__(self, bytes: bytearray):
-        tag, checksum, offset, length = struct.unpack('>4sIII', bytes)
 
-        self.tag = tag.decode('ascii')
-        self.checksum = checksum
-        self.offset = offset
-        self.length = length
+flag_names = ['ON_CURVE_POINT', 'X_SHORT_VECTOR', 'Y_SHORT_VECTOR', 'REPEAT_FLAG', 'X_IS_SAME_OR_POSITIVE_X_SHORT_VECTOR',
+              'Y_IS_SAME_OR_POSITIVE_Y_SHORT_VECTOR', 'OVERLAP_SIMPLE']
+class GlyphFlags:
+    def __init__(self, flag_byte: bytes) -> None:
+        self.flags = flag_byte
 
+    @property
+    def ON_CURVE_POINT(self):
+        return self.flags & 1 > 0
+    
+    @property
+    def X_SHORT_VECTOR(self):
+        return self.flags & (1 << 1) > 0
+    
+    @property
+    def Y_SHORT_VECTOR(self):
+        return self.flags & (1 << 2) > 0
+    
+    @property
+    def REPEAT_FLAG(self):
+        return self.flags & (1 << 3) > 0
+    
+    @property
+    def X_IS_SAME_OR_POSITIVE(self):
+        return self.flags & (1 << 4) > 0
+    
+    @property
+    def Y_IS_SAME_OR_POSITIVE(self):
+        return self.flags & (1 << 5) > 0
+    
+    @property
+    def OVERLAP_SIMPLE(self):
+        return self.flags & (1 << 6) > 0
+        
 @dataclass
 class Glyph:
     numberOfContours: int
@@ -23,37 +72,69 @@ class Glyph:
     yMin: int
     xMax: int
     yMax: int
+    endPtsOfContours: list
+    instructionLength: int
+    instructions: list
+    flags: list
+    xCoordinates: list
+    yCoordinates: list
 
-    def __init__(self, bytes: bytearray):
-        numberOfContours, xMin, yMin, xMax, yMax = struct.unpack('>IIIII', bytes[0:12])
-        self.numberOfContours = numberOfContours
-        self.xMin = xMin
-        self.yMin = yMin
-        self.xMax = xMax
-        self.yMax = yMax
+    def __init__(self, buffer: ByteArrayBuffer):
+        self.numberOfContours, self.xMin, self.yMin, self.xMax, self.yMax = struct.unpack('>hHHHH', buffer.read(12))
+        self.compound = self.numberOfContours < 0
+        
+        if self.compound:
+            self.get_compound_glyph(buffer)
+        else:
+            self.get_simple_glyph(buffer)
 
+    def get_compound_glyph(self, buffer: ByteArrayBuffer):
+        pass
+
+    def get_simple_glyph(self, buffer: ByteArrayBuffer):
+        for _ in range(self.numberOfContours):
+            self.endPtsOfContours.append(struct.unpack('>h', buffer.read(2)))
+
+        self.instructionLength = struct.unpack('>h', buffer.read(2))
+        for _ in range(self.instructionLength):
+            self.instructions.append(struct.unpack('>B', buffer.read(1)))
+
+        repeat_count = 0
+        for _ in range(self.numberOfContours):
+            if repeat_count > 0:
+                self.flags.append(GlyphFlags(self.flags[-1].flags))
+                repeat_count -= 1
+                continue
+
+            current_flag = GlyphFlags(buffer.read(1))
+            if current_flag.REPEAT_FLAG:
+                repeat_count = struct.unpack('>B', buffer.read(1))
+            self.flags.append(current_flag)
+            
+            
+            
+
+
+
+        
 
 class PWFont:
-    def __init__(self, bytes: bytearray) -> None:
-        self.bytes = bytes
-        if not bytes:
+    def __init__(self, buffer: bytearray) -> None:
+        self.buffer = ByteArrayBuffer(buffer)
+        if not buffer:
             return
         
         self.get_offset_table()
 
-        self.directory_entries = []
-        index = 12
-        for entry in range(self.offset_table['numTables']):
-            offset = index+(entry*16)
-            self.directory_entries.append(directory_entry(self.bytes[offset:offset+16]))
-            print(f'entry: {self.directory_entries[-1].tag} location: {self.directory_entries[-1].offset}')
+        self.directory_entries = {}
+        for _ in range(self.numTables):
+            self.get_directory_entry()
 
         
     def get_offset_table(self):
-        self.offset_table = {}
-        
-        self.offset_table['scaler_type'] = struct.unpack('>I', self.bytes[0:4])[0]
-        self.offset_table['numTables'] = struct.unpack('>H', self.bytes[4:6])[0]
-        self.offset_table['searchRange'] = struct.unpack('>H', self.bytes[6:8])[0]
-        self.offset_table['entrySelector'] = struct.unpack('>H', self.bytes[8:10])[0]
-        self.offset_table['rangeShift'] = struct.unpack('>H', self.bytes[10:12])[0]
+        self.scaler_type, self.numTables, self.searchRange, self.entrySelector, self.rangeShift = struct.unpack('>IHHHH', self.buffer.read(12))
+
+    def get_directory_entry(self):
+        tag, checksum, offset, length = struct.unpack('>4sIII', self.buffer.read(16))
+        tag = tag.decode('ascii')
+        self.directory_entries[tag] = directory_entry(checksum, offset, length)
