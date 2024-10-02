@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import struct
+from typing import List
 
 class ByteArrayBuffer:
     def __init__(self, buffer: bytearray) -> None:
@@ -75,9 +76,9 @@ class Glyph:
     endPtsOfContours: list
     instructionLength: int
     instructions: list
-    flags: list
-    xCoordinates: list
-    yCoordinates: list
+    flags: List[GlyphFlags]
+    xCoordinates: List[int]
+    yCoordinates: List[int]
 
     def __init__(self, buffer: ByteArrayBuffer):
         self.numberOfContours, self.xMin, self.yMin, self.xMax, self.yMax = struct.unpack('>hHHHH', buffer.read(12))
@@ -93,11 +94,11 @@ class Glyph:
 
     def get_simple_glyph(self, buffer: ByteArrayBuffer):
         for _ in range(self.numberOfContours):
-            self.endPtsOfContours.append(struct.unpack('>h', buffer.read(2)))
+            self.endPtsOfContours.append(struct.unpack(buffer.read_uint16()))
 
-        self.instructionLength = struct.unpack('>h', buffer.read(2))
+        self.instructionLength = struct.unpack(buffer.read_uint16())
         for _ in range(self.instructionLength):
-            self.instructions.append(struct.unpack('>B', buffer.read(1)))
+            self.instructions.append(struct.unpack(buffer.read_uint8()))
 
         repeat_count = 0
         for _ in range(self.numberOfContours):
@@ -108,15 +109,37 @@ class Glyph:
 
             current_flag = GlyphFlags(buffer.read(1))
             if current_flag.REPEAT_FLAG:
-                repeat_count = struct.unpack('>B', buffer.read(1))
+                repeat_count = struct.unpack(buffer.read_uint8())
             self.flags.append(current_flag)
             
-            
-            
+        for index in range(self.numberOfContours):
+            delta_x = 0
+            if self.flags[index].X_SHORT_VECTOR:
+                delta_x = buffer.read_uint8()
+                if not self.flags[index].X_IS_SAME_OR_POSITIVE:
+                    delta_x = -delta_x
+            else:
+                if self.flags[index].X_IS_SAME_OR_POSITIVE:
+                    delta_x = self.xCoordinates[-1]
+                else:
+                    delta_x = buffer.read_int16()
+            self.xCoordinates.append(delta_x)
 
-
+        for index in range(self.numberOfContours):
+            delta_y = 0
+            if self.flags[index].Y_SHORT_VECTOR:
+                delta_y = buffer.read_uint8()
+                if not self.flags[index].Y_IS_SAME_OR_POSITIVE:
+                    delta_y = -delta_y
+            else:
+                if self.flags[index].Y_IS_SAME_OR_POSITIVE:
+                    delta_y = self.yCoordinates[-1]
+                else:
+                    delta_y = buffer.read_int16()
+            self.yCoordinates.append(delta_y)
 
         
+            
 
 class PWFont:
     def __init__(self, buffer: bytearray) -> None:
